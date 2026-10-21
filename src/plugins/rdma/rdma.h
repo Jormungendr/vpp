@@ -214,6 +214,7 @@ typedef struct
   u32 dev_instance;
   rdma_rss4_t rss4;
   rdma_rss6_t rss6;
+  u8 port_num;
 
   struct ibv_context *ctx;
   struct ibv_pd *pd;
