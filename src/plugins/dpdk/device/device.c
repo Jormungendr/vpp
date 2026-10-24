@@ -621,109 +621,33 @@ done:
 static clib_error_t *
 dpdk_interface_set_rss_queues (struct vnet_main_t *vnm,
 			       struct vnet_hw_interface_t *hi,
-			       clib_bitmap_t * bitmap)
+			       clib_bitmap_t *bitmap)
 {
   dpdk_main_t *xm = &dpdk_main;
-  u32 hw_if_index = hi->hw_if_index;
-  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
+  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hi->hw_if_index);
   dpdk_device_t *xd = vec_elt_at_index (xm->devices, hw->dev_instance);
-  clib_error_t *err = 0;
-  struct rte_eth_rss_reta_entry64 *reta_conf = NULL;
-  struct rte_eth_dev_info dev_info;
-  u16 *reta = NULL;
-  u16 *valid_queue = NULL;
-  u16 valid_queue_count = 0;
-  uint32_t i, j;
-  uint32_t ret;
-  int __clib_unused rv;
+  clib_bitmap_t *queues =
+	    bitmap == xd->rss_queues ? 0 : clib_bitmap_dup (bitmap);
+  clib_error_t *err;
 
-  rv = rte_eth_dev_info_get (xd->port_id, &dev_info);
-  ASSERT (rv == 0);
+  if (bitmap != xd->rss_queues && !queues)
+    return clib_error_return (0, "clib_bitmap_dup failed");
 
-  /* parameter check */
-  if (clib_bitmap_count_set_bits (bitmap) == 0)
+  err = dpdk_device_apply_rss_queues (
+	xd, bitmap, (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) != 0);
+  if (err)
     {
-      err = clib_error_return (0, "must assign at least one valid rss queue");
-      goto done;
+      clib_bitmap_free (queues);
+      return err;
     }
 
-  if (clib_bitmap_count_set_bits (bitmap) > dev_info.nb_rx_queues)
+  if (queues)
     {
-      err = clib_error_return (0, "too many rss queues");
-      goto done;
+      clib_bitmap_free (xd->rss_queues);
+      xd->rss_queues = queues;
     }
 
-  /* new RETA */
-  reta = clib_mem_alloc (dev_info.reta_size * sizeof (*reta));
-  if (reta == NULL)
-    {
-      err = clib_error_return (0, "clib_mem_alloc failed");
-      goto done;
-    }
-
-  clib_memset (reta, 0, dev_info.reta_size * sizeof (*reta));
-
-  valid_queue_count = 0;
-  clib_bitmap_foreach (i, bitmap)  {
-    if (i >= dev_info.nb_rx_queues)
-      {
-        err = clib_error_return (0, "illegal queue number");
-        goto done;
-      }
-    reta[valid_queue_count++] = i;
-  }
-
-  /* check valid_queue_count not zero, make coverity happy */
-  if (valid_queue_count == 0)
-    {
-      err = clib_error_return (0, "must assign at least one valid rss queue");
-      goto done;
-    }
-
-  valid_queue = reta;
-  for (i = valid_queue_count, j = 0; i < dev_info.reta_size; i++, j++)
-    {
-      j = j % valid_queue_count;
-      reta[i] = valid_queue[j];
-    }
-
-  /* update reta table */
-  reta_conf = (struct rte_eth_rss_reta_entry64 *) clib_mem_alloc (
-    dev_info.reta_size / RTE_ETH_RETA_GROUP_SIZE * sizeof (*reta_conf));
-  if (reta_conf == NULL)
-    {
-      err = clib_error_return (0, "clib_mem_alloc failed");
-      goto done;
-    }
-
-  clib_memset (reta_conf, 0,
-	       dev_info.reta_size / RTE_ETH_RETA_GROUP_SIZE *
-		 sizeof (*reta_conf));
-
-  for (i = 0; i < dev_info.reta_size; i++)
-    {
-      uint32_t reta_id = i / RTE_ETH_RETA_GROUP_SIZE;
-      uint32_t reta_pos = i % RTE_ETH_RETA_GROUP_SIZE;
-
-      reta_conf[reta_id].mask = UINT64_MAX;
-      reta_conf[reta_id].reta[reta_pos] = reta[i];
-    }
-
-  ret =
-    rte_eth_dev_rss_reta_update (xd->port_id, reta_conf, dev_info.reta_size);
-  if (ret)
-    {
-      err = clib_error_return (0, "rte_eth_dev_rss_reta_update err %d", ret);
-      goto done;
-    }
-
-done:
-  if (reta)
-    clib_mem_free (reta);
-  if (reta_conf)
-    clib_mem_free (reta_conf);
-
-  return err;
+  return 0;
 }
 
 static clib_error_t *
